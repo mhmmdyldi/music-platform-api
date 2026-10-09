@@ -1,0 +1,136 @@
+# Local development stack. Not used in stage or production.
+#
+#   make up        build and start everything
+#   make verify    check every service end to end
+#   make down      stop (data is kept in named volumes)
+#
+# Host ports can be changed with environment variables (see docs/local-development.md)
+# if they collide with something already running on your machine.
+
+name: platform-backend
+
+x-backend: &backend
+  build:
+    context: .
+    args:
+      VERSION: local
+  image: platform-backend:local
+  env_file: config/local.env
+  environment:
+    # Inside Compose the database is the `postgres` service, not localhost.
+    DATABASE_URL: postgres://platform:local-only-password@postgres:5432/platform_local?sslmode=disable
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: local-only-password
+      POSTGRES_DB: platform_local
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform_local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Applies migrations, then exits. The API starts only after it succeeds,
+  # which is the same order deployments use.
+  migrate:
+    <<: *backend
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # S3-compatible object storage. Stands in for AWS S3 locally; nothing in the
+  # backend uses it yet.
+  #
+  # MinIO no longer publishes community images (minio/minio on Docker Hub and
+  # Quay are unavailable), so this is the community build maintained by
+  # Pigsty (https://github.com/pgsty/minio), built from upstream MinIO source.
+  minio:
+    image: &minio-image pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: platform-local
+      MINIO_ROOT_PASSWORD: local-only-password
+    ports:
+      - "${MINIO_API_HOST_PORT:-9100}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9101}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Creates the local bucket once MinIO is up, then exits.
+  minio-init:
+    image: *minio-image
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 platform-local local-only-password &&
+        mc mb --ignore-existing local/platform-local-media
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # Media server: receives audio from Music Sources, serves HLS to listeners.
+  mediamtx:
+    image: &mediamtx-image bluenviron/mediamtx:1.21.1-ffmpeg
+    volumes:
+      - ./deploy/local/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "${MEDIAMTX_RTMP_HOST_PORT:-1935}:1935"
+      - "${MEDIAMTX_SRT_HOST_PORT:-8890}:8890/udp"
+      - "${MEDIAMTX_HLS_HOST_PORT:-8888}:8888"
+      - "${MEDIAMTX_API_HOST_PORT:-9997}:9997"
+
+  # A stand-in Music Source: publishes a continuous 440 Hz tone over RTMP, the
+  # way a DJ app or the AI DJ service will. Listen at
+  # http://localhost:8888/live/test-source/index.m3u8
+  test-source:
+    # The MediaMTX image ships ffmpeg, so the test source needs no extra image.
+    image: *mediamtx-image
+    entrypoint: ["ffmpeg"]
+    command:
+      - -hide_banner
+      - -loglevel
+      - warning
+      - -re
+      - -f
+      - lavfi
+      - -i
+      - sine=frequency=440:sample_rate=48000
+      - -c:a
+      - aac
+      - -b:a
+      - 128k
+      - -f
+      - flv
+      - rtmp://mediamtx:1935/live/test-source?user=local-source&pass=local-only-password
+    # Reconnects if MediaMTX restarts, like a real source would.
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+
+volumes:
+  postgres-data:
+  minio-data:

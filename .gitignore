@@ -1,0 +1,15 @@
+# Build output
+/bin/
+coverage.out
+coverage.html
+
+# Local secrets and overrides. Committed config lives in config/*.env and
+# contains no secrets; anything personal goes in an ignored override.
+.env
+.env.*
+config/*.local.env
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

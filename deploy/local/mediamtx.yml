@@ -1,0 +1,62 @@
+# MediaMTX configuration for LOCAL development only.
+#
+# MediaMTX is the media server of the live-audio pipeline:
+#
+#   Music Source --RTMP/SRT--> MediaMTX --HLS (LL-HLS)--> listeners
+#
+# Any Music Source (the test source here, later a DJ app or the AI DJ
+# service) publishes the same way. The core API never carries audio.
+#
+# Stage and production configuration will live in the infrastructure repo.
+# There, publishing will be authorised by the backend through MediaMTX's HTTP
+# auth hook (authMethod: http) instead of the static user below.
+
+logLevel: info
+
+# Control API, used by scripts/verify-local-stack.sh to see which paths are live.
+api: yes
+apiAddress: :9997
+
+# Ingest protocols for Music Sources.
+rtmp: yes
+rtmpAddress: :1935
+srt: yes
+srtAddress: :8890
+
+# Delivery to listeners. Low-Latency HLS: a few seconds of delay, served
+# through a CDN in deployed environments.
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+# Parts must be a whole number of audio frames or iOS players fail. One AAC
+# frame at 48 kHz lasts 21.33 ms; 320 ms is exactly 15 frames, and a segment
+# is 6 parts.
+hlsPartDuration: 320ms
+hlsSegmentDuration: 1920ms
+hlsAllowOrigins: ['*']
+
+# Not used yet. WebRTC is the option for future interactive rooms.
+rtsp: no
+webrtc: no
+
+authMethod: internal
+authInternalUsers:
+  # The only identity allowed to publish locally. It is a throwaway value,
+  # not a secret.
+  - user: local-source
+    pass: local-only-password
+    ips: []
+    permissions:
+      - action: publish
+
+  # Anyone on the machine may listen and query the API.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+      - action: playback
+      - action: api
+
+paths:
+  all_others:

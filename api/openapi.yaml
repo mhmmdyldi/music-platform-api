@@ -1,0 +1,129 @@
+openapi: 3.1.0
+info:
+  title: Platform Backend API
+  version: 0.1.0
+  description: |
+    Core API of the live music platform.
+
+    This document is the contract for every client (mobile apps, web, Music
+    Sources such as the AI DJ service). Every route served by the backend must
+    be described here; `internal/httpapi/router_test.go` fails otherwise.
+
+    Errors use RFC 9457 `application/problem+json` (see `Problem`). Clients
+    branch on the stable `code` field, never on `title` or `detail`.
+
+    Every response carries an `X-Request-ID` header. Send your own to correlate
+    requests across services; quote it when reporting a problem.
+
+paths:
+  /livez:
+    get:
+      operationId: getLiveness
+      summary: Liveness probe
+      description: |
+        Reports that the process is running and identifies the build. It does not
+        check dependencies, so a database outage never causes restarts.
+      tags: [operations]
+      responses:
+        "200":
+          description: The process is alive.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/RequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Liveness"
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: |
+        Reports whether this instance should receive traffic: every dependency
+        check passes and the instance is not shutting down. Intended for the
+        orchestrator and load balancer, not for public clients.
+      tags: [operations]
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: Not ready. The failing checks are listed with their errors.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+
+components:
+  headers:
+    RequestID:
+      description: Correlation ID of the request, echoed from the caller when well-formed.
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._-]{1,128}$"
+
+  schemas:
+    Liveness:
+      type: object
+      required: [status, service, environment, version, commit]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: platform-backend
+        environment:
+          type: string
+          enum: [local, test, stage, production]
+        version:
+          type: string
+          example: v0.1.0
+        commit:
+          type: string
+
+    Readiness:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready, draining]
+        checks:
+          type: object
+          additionalProperties:
+            type: object
+            required: [status]
+            properties:
+              status:
+                type: string
+                enum: [ok, fail]
+              error:
+                type: string
+
+    Problem:
+      description: RFC 9457 problem details, returned with every error status.
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          example: about:blank
+        title:
+          type: string
+          example: Not Found
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          example: route_not_found
+        request_id:
+          type: string
